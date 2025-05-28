@@ -1,0 +1,47 @@
+# api_fetcher.py
+
+import requests
+import json
+
+# --- Configuration (REPLACE THESE WITH THE ACTUAL VALUES GIVEN TO YOU) ---
+EXTERNAL_API_URL = "https://your-company-api.com/data" # Example URL, replace with actual
+API_KEY = "YOUR_SECRET_API_KEY_HERE" # Example key, replace with actual
+
+def fetch_data_from_api(url, api_key):
+    """
+    Fetches data from an external API and returns it as a JSON object.
+    Handles common HTTP errors.
+    """
+    headers = {
+        "Authorization": f"Bearer {api_key}", # Common for many APIs
+        "Accept": "application/json"
+    }
+    # If the API key is a query parameter, use 'params' instead of 'headers':
+    # params = {"api_key": api_key}
+    # response = requests.get(url, params=params)
+
+    try:
+        response = requests.get(url, headers=headers)
+        response.raise_for_status()  # Raises an HTTPError for bad responses (4xx or 5xx)
+        return response.json()
+    except requests.exceptions.HTTPError as errh:
+        print(f"HTTP Error occurred: {errh} - Response Text: {response.text}")
+    except requests.exceptions.ConnectionError as errc:
+        print(f"Error Connecting to API: {errc}")
+    except requests.exceptions.Timeout as errt:
+        print(f"Timeout Error during API request: {errt}")
+    except requests.exceptions.RequestException as err:
+        print(f"An unexpected error occurred during API request: {err}")
+    except json.JSONDecodeError:
+        print(f"Failed to decode JSON from response: {response.text}")
+    return None
+
+if __name__ == "__main__":
+    print("Attempting to fetch data from the external API...")
+    data = fetch_data_from_api(EXTERNAL_API_URL, API_KEY)
+    if data:
+        print("Successfully fetched data:")
+        # Print a snippet, or the full data if it's small
+        print(json.dumps(data, indent=2)[:500] + "...") # Print first 500 chars for brevity
+    else:
+        print("Failed to fetch data. Check your URL, API Key, and network connection.")
