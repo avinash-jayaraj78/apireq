@@ -1,0 +1,153 @@
+You're asking how to specifically adapt the dynamic code I've given you when faced with a real, specific API and key during your task. This is exactly where the "dynamic" part of the code comes into play!
+
+Here's how you'll use it:
+
+The core idea is to change the **configuration variables** in your `api_fetcher.py` to match the details provided by the test givers, and potentially adjust how the API key is passed if it differs from the `Bearer` token method I used in the mock.
+
+### **Focus on `api_fetcher.py`**
+
+This is the file responsible for fetching data from the external API. You will modify its configuration based on the API details they give you.
+
+**1. Update the API Endpoint URL:**
+
+* **What they give you:** A URL like `https://api.example.com/v1/patches` or `http://another-service.net/data`.
+* **What you do:** Open `api_fetcher.py` and find the line defining `EXTERNAL_API_URL`. Replace the placeholder with their actual URL.
+
+    **Original (Mock):**
+    ```python
+    EXTERNAL_API_URL = "http://127.0.0.1:8000/api/v1/patches" # This was for your local mock API
+    ```
+
+    **Your Dynamic Change:**
+    ```python
+    # api_fetcher.py
+
+    import requests
+    import json
+
+    # --- Configuration (UPDATE THIS DYNAMICALLY DURING THE TEST) ---
+    EXTERNAL_API_URL = "THE_ACTUAL_API_ENDPOINT_URL_THEY_GIVE_YOU_HERE"
+    # Example: EXTERNAL_API_URL = "https://public.vulnerability-db.com/api/v2/advisories"
+    ```
+
+**2. Update the API Key:**
+
+* **What they give you:** The actual API key string (e.g., `sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx`).
+* **What you do:** Find the line defining `API_KEY` in `api_fetcher.py` and replace it with their key.
+
+    **Original (Mock):**
+    ```python
+    API_KEY = "PRACTICE_SECURE_KEY_12345" # This was your dummy key
+    ```
+
+    **Your Dynamic Change:**
+    ```python
+    # api_fetcher.py
+
+    # ... (previous code)
+
+    API_KEY = "THE_ACTUAL_API_KEY_THEY_GIVE_YOU_HERE"
+    # Example: API_KEY = "sk-y9zB1oP7qR3sT5uV7wX9yZ1a2b3c4d5e"
+    ```
+
+**3. Adjust How the API Key is Sent (Crucial Adaptation!):**
+
+This is where it gets highly dynamic. External APIs have different ways of requiring the API key. My mock API used a `Bearer` token in the `Authorization` header. You'll need to listen carefully to how they tell you to pass the key.
+
+* **Scenario A: `Authorization` Header with `Bearer` Token (Most Common)**
+    * **What they tell you:** "Pass the API key in the `Authorization` header as a `Bearer` token."
+    * **Your Code (No Change Needed, it's already set up this way):**
+        ```python
+        # api_fetcher.py
+
+        # ... (inside fetch_data_from_api function)
+
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Accept": "application/json"
+        }
+        response = requests.get(url, headers=headers, timeout=10)
+        ```
+
+* **Scenario B: Query Parameter**
+    * **What they tell you:** "Pass the API key as a query parameter called `api_key` (or `token`, `key`, etc.)."
+    * **Your Code (Modify `headers` and use `params`):**
+        ```python
+        # api_fetcher.py
+
+        # ... (inside fetch_data_from_api function)
+
+        # Remove 'headers' dictionary or set it to empty if no headers are needed
+        # headers = {"Accept": "application/json"} # Keep only if other headers are needed
+        
+        params = {
+            "api_key": api_key # Use the specific parameter name they give you
+        }
+        response = requests.get(url, params=params, timeout=10)
+        ```
+
+* **Scenario C: Custom Header (e.g., `X-API-Key`)**
+    * **What they tell you:** "Pass the API key in a custom header called `X-API-Key`."
+    * **Your Code (Modify `headers`):**
+        ```python
+        # api_fetcher.py
+
+        # ... (inside fetch_data_from_api function)
+
+        headers = {
+            "X-API-Key": api_key, # Use the specific header name they give you
+            "Accept": "application/json"
+        }
+        response = requests.get(url, headers=headers, timeout=10)
+        ```
+
+**4. Adjust JSON Response Parsing (Dynamic Adaptation):**
+
+* **What they give you:** A sample JSON response (or you infer it by running the API).
+* **What you do:** The `fetch_data_from_api` function expects the actual data to be nested under a key called `"data"` (like my mock API provided). If their actual API returns the primary list of items directly, or under a different key, you'll need to adjust this line:
+
+    **Original (Assumes `"data"` key):**
+    ```python
+    # api_fetcher.py
+
+    # ... (inside fetch_data_from_api function)
+
+    json_data = response.json()
+    if json_data and "data" in json_data:
+        return json_data["data"] # Returns the list found under "data"
+    else:
+        print("API response does not contain 'data' key or is empty.")
+        return None
+    ```
+
+    **Your Dynamic Change (Example - if data is at root or under a different key):**
+
+    * **If the API returns the list directly (e.g., `[{}, {}, ...]`)**
+        ```python
+        json_data = response.json()
+        if isinstance(json_data, list): # Check if the root is a list
+            return json_data
+        else:
+            print("API response is not a list or does not contain expected structure.")
+            return None
+        ```
+    * **If the API returns data under a different key (e.g., `"items"` or `"results"`)**
+        ```python
+        json_data = response.json()
+        if json_data and "items" in json_data: # Or "results", "records", etc.
+            return json_data["items"]
+        else:
+            print("API response does not contain 'items' key or is empty.")
+            return None
+        ```
+
+### **Summary of Dynamic Steps During the Test:**
+
+1.  **Listen carefully** to the exact API endpoint URL and how the API key should be used.
+2.  **Open `api_fetcher.py`** and update `EXTERNAL_API_URL` and `API_KEY`.
+3.  **Adjust the `headers` or `params`** in `api_fetcher.py` based on how the API key is passed (Bearer token, query param, custom header).
+4.  **Run `python api_fetcher.py`** to test the connection and inspect the *actual* JSON response structure.
+5.  **Adjust the JSON parsing logic** in `api_fetcher.py` (e.g., `json_data["data"]`) to correctly extract the list of patch records.
+6.  Proceed to update your `database_manager.py` schema and ingestion logic based on the *actual fields* you received in the API response.
+
+By making these specific, targeted changes, your dynamic code will seamlessly integrate with the actual API they provide.
