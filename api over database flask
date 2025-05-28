@@ -1,0 +1,222 @@
+# app.py
+
+from flask import Flask, jsonify, request
+import sqlite3
+import json
+
+app = Flask(__name__)
+DATABASE_NAME = "patch_intelligence.db" # Must match the database name from database_manager.py
+
+def get_db_connection():
+    """Establishes a connection to the SQLite database with row_factory."""
+    conn = sqlite3.connect(DATABASE_NAME)
+    conn.row_factory = sqlite3.Row # This makes rows behave like dictionaries
+    return conn
+
+@app.route('/')
+def home():
+    """Simple home endpoint."""
+    return "Welcome to the Patch Intelligence API! Try /patches or /vulnerabilities."
+
+@app.route('/patches', methods=['GET'])
+def get_all_patches():
+    """
+    Returns all patch records from the database.
+    Includes linked CVEs and CPEs.
+    """
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    # Complex query to fetch patches with their linked CVEs and CPEs
+    # This shows understanding of SQL JOINs and data aggregation
+    cursor.execute('''
+        SELECT
+            p.*,
+            GROUP_CONCAT(DISTINCT v.cve_id) AS vulnerabilities_fixed,
+            GROUP_CONCAT(DISTINCT c.cpe_string) AS corresponding_nvd_cpes
+        FROM
+            patches p
+        LEFT JOIN
+            patch_vulnerability_links pvl ON p.id = pvl.patch_id
+        LEFT JOIN
+            vulnerabilities v ON pvl.vulnerability_id = v.id
+        LEFT JOIN
+            patch_cpe_links pcl ON p.id = pcl.patch_id
+        LEFT JOIN
+            cpes c ON pcl.cpe_id = c.id
+        GROUP BY
+            p.id
+        ORDER BY
+            p.product, p.fixed_version
+    ''')
+    
+    patches = cursor.fetchall()
+    conn.close()
+
+    # Convert Row objects to dictionaries and process lists
+    result = []
+    for patch in patches:
+        patch_dict = dict(patch)
+        # Convert comma-separated strings back to lists
+        if patch_dict['vulnerabilities_fixed']:
+            patch_dict['vulnerabilities_fixed'] = patch_dict['vulnerabilities_fixed'].split(',')
+        else:
+            patch_dict['vulnerabilities_fixed'] = []
+        
+        if patch_dict['corresponding_nvd_cpes']:
+            patch_dict['corresponding_nvd_cpes'] = patch_dict['corresponding_nvd_cpes'].split(',')
+        else:
+            patch_dict['corresponding_nvd_cpes'] = []
+            
+        # Parse metadata back to dict
+        if patch_dict['metadata']:
+            try:
+                patch_dict['metadata'] = json.loads(patch_dict['metadata'])
+            except json.JSONDecodeError:
+                patch_dict['metadata'] = {} # Fallback if parsing fails
+        else:
+            patch_dict['metadata'] = {}
+
+        # Remove raw_data from response for cleaner API output
+        patch_dict.pop('raw_data', None)
+
+        result.append(patch_dict)
+
+    return jsonify(result)
+
+@app.route('/patches/<int:patch_id>', methods=['GET'])
+def get_patch_by_id(patch_id):
+    """
+    Returns a single patch record by its internal database ID.
+    Includes linked CVEs and CPEs.
+    """
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute('''
+        SELECT
+            p.*,
+            GROUP_CONCAT(DISTINCT v.cve_id) AS vulnerabilities_fixed,
+            GROUP_CONCAT(DISTINCT c.cpe_string) AS corresponding_nvd_cpes
+        FROM
+            patches p
+        LEFT JOIN
+            patch_vulnerability_links pvl ON p.id = pvl.patch_id
+        LEFT JOIN
+            vulnerabilities v ON pvl.vulnerability_id = v.id
+        LEFT JOIN
+            patch_cpe_links pcl ON p.id = pcl.patch_id
+        LEFT JOIN
+            cpes c ON pcl.cpe_id = c.id
+        WHERE
+            p.id = ?
+        GROUP BY
+            p.id
+    ''', (patch_id,))
+    
+    patch = cursor.fetchone()
+    conn.close()
+
+    if patch:
+        patch_dict = dict(patch)
+        if patch_dict['vulnerabilities_fixed']:
+            patch_dict['vulnerabilities_fixed'] = patch_dict['vulnerabilities_fixed'].split(',')
+        else:
+            patch_dict['vulnerabilities_fixed'] = []
+        
+        if patch_dict['corresponding_nvd_cpes']:
+            patch_dict['corresponding_nvd_cpes'] = patch_dict['corresponding_nvd_cpes'].split(',')
+        else:
+            patch_dict['corresponding_nvd_cpes'] = []
+
+        if patch_dict['metadata']:
+            try:
+                patch_dict['metadata'] = json.loads(patch_dict['metadata'])
+            except json.JSONDecodeError:
+                patch_dict['metadata'] = {}
+        else:
+            patch_dict['metadata'] = {}
+            
+        patch_dict.pop('raw_data', None) # Clean up raw_data for output
+        return jsonify(patch_dict)
+    else:
+        return jsonify({"error": "Patch not found"}), 404
+
+@app.route('/patches/search', methods=['GET'])
+def search_patches():
+    """
+    Searches patches by product name or vendor.
+    Usage: /patches/search?query=windows or /patches/search?query=microsoft
+    """
+    query = request.args.get('query')
+    if not query:
+        return jsonify({"error": "Query parameter 'query' is required"}), 400
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    search_term = f"%{query}%"
+
+    cursor.execute('''
+        SELECT
+            p.*,
+            GROUP_CONCAT(DISTINCT v.cve_id) AS vulnerabilities_fixed,
+            GROUP_CONCAT(DISTINCT c.cpe_string) AS corresponding_nvd_cpes
+        FROM
+            patches p
+        LEFT JOIN
+            patch_vulnerability_links pvl ON p.id = pvl.patch_id
+        LEFT JOIN
+            vulnerabilities v ON pvl.vulnerability_id = v.id
+        LEFT JOIN
+            patch_cpe_links pcl ON p.id = pcl.patch_id
+        LEFT JOIN
+            cpes c ON pcl.cpe_id = c.id
+        WHERE
+            p.product LIKE ? OR p.vendor LIKE ?
+        GROUP BY
+            p.id
+        ORDER BY
+            p.product, p.fixed_version
+    ''', (search_term, search_term))
+    
+    patches = cursor.fetchall()
+    conn.close()
+
+    result = []
+    for patch in patches:
+        patch_dict = dict(patch)
+        if patch_dict['vulnerabilities_fixed']:
+            patch_dict['vulnerabilities_fixed'] = patch_dict['vulnerabilities_fixed'].split(',')
+        else:
+            patch_dict['vulnerabilities_fixed'] = []
+        
+        if patch_dict['corresponding_nvd_cpes']:
+            patch_dict['corresponding_nvd_cpes'] = patch_dict['corresponding_nvd_cpes'].split(',')
+        else:
+            patch_dict['corresponding_nvd_cpes'] = []
+
+        if patch_dict['metadata']:
+            try:
+                patch_dict['metadata'] = json.loads(patch_dict['metadata'])
+            except json.JSONDecodeError:
+                patch_dict['metadata'] = {}
+        else:
+            patch_dict['metadata'] = {}
+
+        patch_dict.pop('raw_data', None)
+        result.append(patch_dict)
+
+    return jsonify(result)
+
+
+if __name__ == '__main__':
+    # Ensure tables are created and some mock data is ingested before running the API
+    # You would typically run database_manager.py once before starting the API
+    # For a combined demo, you can call it here:
+    import database_manager
+    database_manager.create_tables()
+    # If you need to ensure data is present, call ingest_patch_data from database_manager here
+    # database_manager.ingest_patch_data(database_manager.mock_api_data) # Only if you haven't run it separately
+
+    print("Starting Flask API...")
+    app.run(debug=True, port=5000) # debug=True is for development, set to False for production
