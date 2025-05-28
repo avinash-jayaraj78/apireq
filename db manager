@@ -1,0 +1,237 @@
+# database_manager.py
+
+import sqlite3
+import json
+
+DATABASE_NAME = "patch_intelligence.db"
+
+def get_db_connection():
+    """Establishes a connection to the SQLite database."""
+    conn = sqlite3.connect(DATABASE_NAME)
+    conn.row_factory = sqlite3.Row # Allows accessing columns by name, like a dictionary
+    return conn
+
+def create_tables():
+    """
+    Creates necessary tables for storing patch, vulnerability, and CPE data,
+    and their relationships.
+    """
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    # Table for Patch Information
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS patches (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            vendor TEXT,
+            product TEXT,
+            fixed_version TEXT,
+            reference_kb TEXT,
+            known_performance_issues TEXT,
+            crash_likelihood TEXT,
+            reboot_requirements TEXT,
+            end_of_lifecycle_info TEXT,
+            metadata TEXT, -- Store any other metadata as JSON string
+            raw_data TEXT UNIQUE -- Store original JSON for completeness and uniqueness check
+        )
+    ''')
+
+    # Table for Vulnerabilities (CVEs and non-CVE security issues)
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS vulnerabilities (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            cve_id TEXT UNIQUE, -- e.g., CVE-2023-12345, or a custom ID for non-CVE
+            description TEXT,
+            severity TEXT
+        )
+    ''')
+
+    # Table for CPEs
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS cpes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            cpe_string TEXT UNIQUE, -- e.g., cpe:/o:microsoft:windows_10:22h2
+            product_name TEXT,
+            vendor_name TEXT
+        )
+    ''')
+
+    # Junction table for Patches to Vulnerabilities (many-to-many)
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS patch_vulnerability_links (
+            patch_id INTEGER,
+            vulnerability_id INTEGER,
+            FOREIGN KEY (patch_id) REFERENCES patches(id),
+            FOREIGN KEY (vulnerability_id) REFERENCES vulnerabilities(id),
+            UNIQUE (patch_id, vulnerability_id)
+        )
+    ''')
+
+    # Junction table for Patches to CPEs (many-to-many)
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS patch_cpe_links (
+            patch_id INTEGER,
+            cpe_id INTEGER,
+            FOREIGN KEY (patch_id) REFERENCES patches(id),
+            FOREIGN KEY (cpe_id) REFERENCES cpes(id),
+            UNIQUE (patch_id, cpe_id)
+        )
+    ''')
+
+    conn.commit()
+    conn.close()
+    print("Database tables created or already exist.")
+
+def ingest_patch_data(patch_records):
+    """
+    Ingests a list of patch data dictionaries into the database.
+    Handles insertion of related CVEs and CPEs, and links them to patches.
+    """
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    ingested_count = 0
+
+    for patch_data in patch_records:
+        raw_json_data = json.dumps(patch_data)
+        
+        # Check if this patch (based on its full raw data) already exists
+        cursor.execute("SELECT id FROM patches WHERE raw_data = ?", (raw_json_data,))
+        existing_patch = cursor.fetchone()
+
+        if existing_patch:
+            print(f"Skipping duplicate patch record.")
+            patch_id = existing_patch['id']
+        else:
+            try:
+                # Insert patch data
+                cursor.execute('''
+                    INSERT INTO patches (
+                        vendor, product, fixed_version, reference_kb,
+                        known_performance_issues, crash_likelihood, reboot_requirements,
+                        end_of_lifecycle_info, metadata, raw_data
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (
+                    patch_data.get('vendor'),
+                    patch_data.get('product'),
+                    patch_data.get('fixed_version'),
+                    patch_data.get('reference_kb'),
+                    patch_data.get('known_performance_issues'),
+                    patch_data.get('crash_likelihood'),
+                    patch_data.get('reboot_requirements'),
+                    patch_data.get('end_of_lifecycle_info'),
+                    json.dumps(patch_data.get('metadata', {})), # Store metadata as JSON string
+                    raw_json_data
+                ))
+                patch_id = cursor.lastrowid
+                ingested_count += 1
+                print(f"Ingested new patch for {patch_data.get('product')} version {patch_data.get('fixed_version')}")
+
+                # --- Ingest and link vulnerabilities ---
+                for cve_id in patch_data.get('vulnerabilities_fixed', []):
+                    # Try to get existing vulnerability, or insert new one
+                    cursor.execute("SELECT id FROM vulnerabilities WHERE cve_id = ?", (cve_id,))
+                    vulnerability = cursor.fetchone()
+                    if not vulnerability:
+                        cursor.execute("INSERT INTO vulnerabilities (cve_id) VALUES (?)", (cve_id,))
+                        vulnerability_id = cursor.lastrowid
+                    else:
+                        vulnerability_id = vulnerability['id']
+                    
+                    # Link patch to vulnerability
+                    try:
+                        cursor.execute("INSERT INTO patch_vulnerability_links (patch_id, vulnerability_id) VALUES (?, ?)",
+                                       (patch_id, vulnerability_id))
+                    except sqlite3.IntegrityError:
+                        # Link already exists, ignore
+                        pass
+
+                # --- Ingest and link CPEs ---
+                cpe_string = patch_data.get('corresponding_nvd_cpe')
+                if cpe_string:
+                    cursor.execute("SELECT id FROM cpes WHERE cpe_string = ?", (cpe_string,))
+                    cpe = cursor.fetchone()
+                    if not cpe:
+                        # You might parse product_name/vendor_name from cpe_string if needed
+                        cursor.execute("INSERT INTO cpes (cpe_string) VALUES (?)", (cpe_string,))
+                        cpe_id = cursor.lastrowid
+                    else:
+                        cpe_id = cpe['id']
+
+                    # Link patch to CPE
+                    try:
+                        cursor.execute("INSERT INTO patch_cpe_links (patch_id, cpe_id) VALUES (?, ?)",
+                                       (patch_id, cpe_id))
+                    except sqlite3.IntegrityError:
+                        # Link already exists, ignore
+                        pass
+
+            except sqlite3.IntegrityError as e:
+                # This catches if raw_data was not unique for some reason, though it should be handled above
+                print(f"Integrity Error during patch insertion: {e} for data: {patch_data.get('raw_data')}")
+            except Exception as e:
+                print(f"Error inserting patch data: {e} for item: {patch_data}")
+        
+    conn.commit()
+    conn.close()
+    print(f"Finished ingesting. {ingested_count} new patch records were added.")
+
+
+if __name__ == "__main__":
+    create_tables()
+
+    # --- Mock Data for Testing Ingestion (replace with actual fetched data) ---
+    # This mock data is designed to align with the "Actionable structure of Patch Information"
+    # and the "Application Libraries Graph Database" components from the PDF.
+    mock_api_data = [
+        {
+            "vendor": "Microsoft",
+            "product": "Windows 10",
+            "fixed_version": "22H2 Build 19045.3031",
+            "reference_kb": "KB5027215",
+            "vulnerabilities_fixed": ["CVE-2023-21768", "CVE-2023-21780", "CVE-2023-0001"],
+            "corresponding_nvd_cpe": "cpe:/o:microsoft:windows_10:22h2",
+            "known_performance_issues": "Minor stuttering reported on some AMD systems.",
+            "crash_likelihood": "Low",
+            "reboot_requirements": "Yes",
+            "end_of_lifecycle_info": None,
+            "metadata": {"package_name": "Windows OS", "environment": "Desktop"} # Example of extra metadata
+        },
+        {
+            "vendor": "Mozilla",
+            "product": "Firefox",
+            "fixed_version": "115.0.2",
+            "reference_kb": "https://www.mozilla.org/security/advisories/mfsa2023-26/",
+            "vulnerabilities_fixed": ["CVE-2023-38608"],
+            "corresponding_nvd_cpe": "cpe:/a:mozilla:firefox:115.0.1",
+            "known_performance_issues": None,
+            "crash_likelihood": "Very Low",
+            "reboot_requirements": "No",
+            "end_of_lifecycle_info": None,
+            "metadata": {"package_name": "Firefox Browser", "environment": "Web"}
+        },
+        {
+            "vendor": "Apple",
+            "product": "iOS",
+            "fixed_version": "17.5.1",
+            "reference_kb": "HT201222",
+            "vulnerabilities_fixed": ["CVE-2024-23267", "CVE-2024-23268", "NON-CVE-BUG-001"],
+            "corresponding_nvd_cpe": "cpe:/o:apple:iphone_os:17.5",
+            "known_performance_issues": "Temporary battery drain observed by some users post-update.",
+            "crash_likelihood": "Low",
+            "reboot_requirements": "Yes",
+            "end_of_lifecycle_info": None,
+            "metadata": {"package_name": "iOS", "environment": "Mobile"}
+        }
+    ]
+
+    print("\nIngesting mock data...")
+    ingest_patch_data(mock_api_data)
+
+    # --- Verification (Optional, but good for testing) ---
+    print("\nVerifying ingested data:")
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT p.product, p.fixed_version, group_concat(v.cve_id) AS fixed_cves FROM patches p LEFT JOIN patch_vulnerability_links pvl ON p.id = pvl.patch_id LEFT JOIN vulnerabilities v ON pvl.vulnerability_id = v.id GROUP BY p.id")
+    for row in cursor.fetchall():
+        print(f"Product: {row['product']}, Version: {row['fixed_version']}, Fixed CVEs: {row['fixed_cves']}")
+    conn.close()
