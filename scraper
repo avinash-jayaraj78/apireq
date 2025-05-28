@@ -1,0 +1,89 @@
+# web_scraper.py
+
+import requests
+from bs4 import BeautifulSoup
+
+def scrape_webpage(url):
+    """
+    Fetches a webpage and parses it using BeautifulSoup.
+    Returns the BeautifulSoup object.
+    """
+    try:
+        response = requests.get(url, timeout=10) # Add a timeout
+        response.raise_for_status() # Raise an HTTPError for bad responses (4xx or 5xx)
+        soup = BeautifulSoup(response.text, 'lxml') # 'lxml' is generally faster
+        return soup
+    except requests.exceptions.RequestException as e:
+        print(f"Error fetching {url}: {e}")
+        return None
+
+def extract_patch_issues_from_advisory(url):
+    """
+    Example function to extract specific information from a mock advisory page.
+    You'll need to adapt the selectors (div, p, class names) based on the actual HTML structure.
+    """
+    soup = scrape_webpage(url)
+    if not soup:
+        return {}
+
+    issues = {}
+    
+    # Example: Find a div with a specific ID or class that contains "Known Issues"
+    known_issues_section = soup.find('div', class_='known-issues')
+    if known_issues_section:
+        issues['known_performance_issues'] = known_issues_section.get_text(strip=True)
+    
+    # Example: Find a paragraph related to "Crash Likelihood"
+    crash_likelihood_tag = soup.find('p', string=lambda text: text and 'crash likelihood' in text.lower())
+    if crash_likelihood_tag:
+        issues['crash_likelihood'] = crash_likelihood_tag.get_text(strip=True)
+        
+    # Example: Find a specific link or text for "Reboot Requirements"
+    reboot_info = soup.find('span', class_='reboot-status')
+    if reboot_info:
+        issues['reboot_requirements'] = reboot_info.get_text(strip=True)
+
+    return issues
+
+if __name__ == "__main__":
+    print("Demonstrating basic web scraping...")
+
+    # Example: A simple public website to scrape (not related to patches, just for demo)
+    demo_url = "http://quotes.toscrape.com/"
+    print(f"\nAttempting to scrape: {demo_url}")
+    soup_obj = scrape_webpage(demo_url)
+    if soup_obj:
+        print("Scraped page title:", soup_obj.title.text)
+        # Find all quotes on the page
+        quotes = soup_obj.find_all('div', class_='quote')
+        for i, quote in enumerate(quotes[:3]): # Print first 3 quotes
+            text = quote.find('span', class_='text').text
+            author = quote.find('small', class_='author').text
+            print(f"  Quote {i+1}: \"{text}\" - {author}")
+
+    # --- Example of how you might use it for patch intelligence ---
+    # This URL would be provided by them, or you'd simulate it.
+    # Imagine this page contains details like "Known Performance Issues"
+    mock_advisory_url = "https://example.com/mock-advisory-page" # Replace with actual URL if given
+
+    # You'd need to manually create an HTML file for testing this specific function
+    # Example content for a file named 'mock_advisory_page.html':
+    """
+    <html>
+    <body>
+        <h1>Patch KB12345 Advisory</h1>
+        <div class="known-issues">
+            <h3>Known Performance Issues:</h3>
+            <p>Some users reported minor frame rate drops in certain applications after update.</p>
+        </div>
+        <p>This update has a very low crash likelihood.</p>
+        <span class="reboot-status">Reboot Required: Yes</span>
+    </body>
+    </html>
+    """
+    # For actual testing, you'd load this from a URL, but for local demo:
+    # with open('mock_advisory_page.html', 'r') as f:
+    #     mock_html_content = f.read()
+    # soup = BeautifulSoup(mock_html_content, 'lxml')
+    # issues = extract_patch_issues_from_advisory_from_soup(soup) # Modify function to take soup directly
+    # print("\nExtracted patch issues:", issues)
